@@ -25,22 +25,28 @@ logs_db = TinyDB(f"{TINYDB_DIR}/logs.json")
 
 encoded_token = base64.b64encode((HONEYWELL_KEY + ":" + HONEYWELL_SECRET).encode("utf-8"))
 
-def honeywell_request(type, endpoint, authorization, *, include_content_type: bool = False, params: dict = {}, data = ""):
-        headers = {
-                "authorization": authorization,
-                "cache-control": "no-cache"
-                }
-        if include_content_type:
-                headers["content-type"] = "application/x-www-form-urlencoded"
-        response = requests.request(type, f"https://api.honeywell.com{endpoint}", data=data,headers=headers, params=params)
-        return response.json()
+def honeywell_request(type, endpoint, authorization, *, content_type: str = "", params: dict = {}, data = "", json = {}):
+    headers = {
+        "authorization": authorization,
+        "cache-control": "no-cache"
+        }
+    if not content_type.isspace():
+        headers["content-type"] = content_type
+    response = requests.request(type, f"https://api.honeywell.com{endpoint}", data=data,headers=headers, params=params, json=json)
+    try:
+        response_content = response.json()
+    except:
+        response_content = response.content
+    return response_content
 
 def get_auth_token():
-    response = honeywell_request("POST", "/oauth2/token", encoded_token, include_content_type=True, data=f"grant_type=refresh_token&refresh_token={HONEYWELL_REFRESH}")
+    response = honeywell_request("POST", "/oauth2/token", encoded_token, content_type="application/x-www-form-urlencoded", data=f"grant_type=refresh_token&refresh_token={HONEYWELL_REFRESH}")
     return response["access_token"]
 
-def set_thermostat(settings: dict):
-    honeywell_request("POST", f"/v2/devices/thermostats/{device_id}", f"Bearer {auth_token}", params={"apikey": HONEYWELL_KEY, "locationId": location_id}, data=settings)
+def set_thermostat(update_settings, old_settings):
+    new_settings = {k: old_settings[k] for k in old_settings.keys() & {"mode", "heatSetpoint", "coolSetpoint", "thermostatSetpointStatus", "nextPeriodTime"}}
+    new_settings.update(update_settings)
+    honeywell_request("POST", f"/v2/devices/thermostats/{device_id}", f"Bearer {auth_token}", params={"apikey": HONEYWELL_KEY, "locationId": location_id}, json=new_settings, content_type="application/json")
 
 
 auth_token = get_auth_token()
@@ -69,15 +75,16 @@ tempf = tempc * 9/5 + 32
 thermostat_change = "None"
 
 if tempf < ROOM_TEMP_MINIMUM:
-    set_thermostat('{"mode":"Heat","emergencyHeatActive":true,"heatSetpoint":80,"thermostatSetpointStatus":"PermanentHold"}')
+    set_thermostat({"mode":"EmergencyHeat","heatSetpoint":80,"thermostatSetpointStatus":"PermanentHold"})
     thermostat_change = "RoomHeatBegin"
 else:
     if current_thermostat_status["thermostatSetpointStatus"] == "PermanentHold":
-        set_thermostat('{"thermostatSetpointStatus": "NoHold"')
+        set_thermostat({"thermostatSetpointStatus": "NoHold"}, current_thermostat_status)
         thermostat_change = "RoomHeatEnd"
     should_emergency_activate = outdoor_temp < EHEAT_SETPOINT
     if should_emergency_activate != current_thermostat_status["emergencyHeatActive"]:
-        set_thermostat('{"emergencyHeatActive":%s}' % should_emergency_activate)
+        new_mode = "EmergencyHeat" if should_emergency_activate else "Heat"
+        set_thermostat({"mode":new_mode}, current_thermostat_status)
         thermostat_change = f"ToggleEHeat: {should_emergency_activate}"
 
 current_time = datetime.now();
